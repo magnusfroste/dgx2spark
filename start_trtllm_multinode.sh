@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # NVIDIA TensorRT-LLM Multi-Node Startup Script for DGX Spark
-# Based on NVIDIA's official dgx-spark-playbooks
-# Target: Load large models (200GB+) across both DGX nodes
+# Simplified: Direct launch using environment variables (no SSH entrypoint)
+# Target: Load large models across both DGX nodes
 #
 
 set -e
@@ -12,11 +12,13 @@ DGX1_IP="10.0.0.1"
 DGX2_IP="10.0.0.2"
 MODEL="${MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct}"
 PORT=30000
+MASTER_PORT=29500
 HUGGINGFACE_TOKEN="${HUGGINGFACE_TOKEN:-}"
 HF_CACHE="/home/ss/.cache/huggingface"
 
-# NVIDIA TRT-LLM image
-TRTLLM_IMAGE="nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6"
+# Compute settings
+TENSOR_PARALLEL_SIZE=8  # GPUs per node
+WORLD_SIZE=2            # Total nodes
 
 # Colors
 RED='\033[0;31m'
@@ -34,114 +36,132 @@ usage() {
     echo "Options:"
     echo "  --model MODEL          Model to load"
     echo "  --port PORT            API port (default: 30000)"
+    echo "  --master-port PORT     Master port for distributed (default: 29500)"
     echo "  --stop                 Stop existing containers"
     echo "  --status               Show container status"
+    echo "  --test-single          Test single-node only"
     echo "  -h, --help             Show this help"
 }
 
 STOP=false
 STATUS=false
+TEST_SINGLE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model) MODEL="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
+        --master-port) MASTER_PORT="$2"; shift 2 ;;
         --stop) STOP=true; shift ;;
         --status) STATUS=true; shift ;;
+        --test-single) TEST_SINGLE=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) log_error "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
 
-# Stop containers
 stop_containers() {
     log_info "Stopping TRT-LLM containers..."
-    docker stop trtllm-multinode 2>/dev/null || true
-    docker rm trtllm-multinode 2>/dev/null || true
-    ssh "$DGX2_IP" "docker stop trtllm-multinode 2>/dev/null || true; docker rm trtllm-multinode 2>/dev/null || true" &
+    docker stop trtllm-node-0 trtllm-node-1 2>/dev/null || true
+    docker rm trtllm-node-0 trtllm-node-1 2>/dev/null || true
+    ssh "$DGX2_IP" "docker stop trtllm-node-0 trtllm-node-1 2>/dev/null || true; docker rm trtllm-node-0 trtllm-node-1 2>/dev/null || true" &
     wait
     log_info "Containers stopped"
 }
 
-# Show status
 show_status() {
     echo "=== DGX 1 ($DGX1_IP) - LOCAL ==="
-    docker ps --filter "name=trtllm" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    docker ps --filter "name=trtllm-node" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
     echo ""
     echo "=== DGX 2 ($DGX2_IP) ==="
-    ssh "$DGX2_IP" "docker ps --filter 'name=trtllm' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null || echo "No containers"
+    ssh "$DGX2_IP" "docker ps --filter 'name=trtllm-node' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null || echo "No containers or SSH failed"
 }
 
-# Start cluster
+start_node() {
+    local NODE_RANK=$1
+    local IP=$2
+    local CONTAINER_NAME="trtllm-node-${NODE_RANK}"
+
+    # Determine if this is local or remote
+    if [ "$IP" = "localhost" ] || [ "$IP" = "$(hostname -I | grep -o '10\.0\.0\.[0-9]*' | head -1 || echo '')" ]; then
+        LOCAL=true
+        DOCKER_CMD="docker"
+    else
+        LOCAL=false
+        DOCKER_CMD="ssh $IP docker"
+    fi
+
+    # Build environment
+    local ENV_VARS=(
+        "-e HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}"
+        "-e HF_HOME=/root/.cache/huggingface"
+        "-e WORLD_SIZE=${WORLD_SIZE}"
+        "-e RANK=${NODE_RANK}"
+        "-e MASTER_ADDR=${DGX1_IP}"
+        "-e MASTER_PORT=${MASTER_PORT}"
+        "-e NCCL_DEBUG=INFO"
+        "-e NCCL_IB_DISABLE=1"
+        "-e NCCL_SOCKET_IFNAME=enp1s0f0np0"
+        "-e NCCL_NET_GDR_LEVEL=2"
+        "-e NCCL_P2P_DISABLE=1"
+    )
+
+    # Build docker run command
+    local CMD="docker run -d --name ${CONTAINER_NAME} --rm --gpus all --network host --ipc host"
+    for var in "${ENV_VARS[@]}"; do
+        CMD="$CMD $var"
+    done
+    CMD="$CMD -v ${HF_CACHE}:/root/.cache/huggingface"
+    CMD="$CMD nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6"
+    CMD="$CMD python3 -m tensorrt_llm.serve.openai_server"
+    CMD="$CMD ${MODEL}"
+    CMD="$CMD --tensor_parallel_size ${TENSOR_PARALLEL_SIZE}"
+    CMD="$CMD --max_seq_len 32768"
+    CMD="$CMD --trust_remote_code"
+    CMD="$CMD --port ${PORT}"
+    CMD="$CMD --log_level info"
+
+    log_info "Starting TRT-LLM on ${IP} (node rank ${NODE_RANK})..."
+    if [ "$LOCAL" = true ]; then
+        eval "$CMD"
+    else
+        ssh "$IP" "$CMD"
+    fi
+}
+
 start_cluster() {
     log_info "Starting TensorRT-LLM multi-node cluster..."
     log_info "Model: $MODEL"
-    log_info "Master: $DGX1_IP"
+    log_info "Master: $DGX1_IP (port $MASTER_PORT)"
     log_info "Slave: $DGX2_IP"
+    log_info "GPUs per node: $TENSOR_PARALLEL_SIZE"
+    log_info "Total nodes: $WORLD_SIZE"
     echo ""
 
     # Cleanup
     log_info "Cleaning up existing containers..."
-    docker rm -f trtllm-multinode 2>/dev/null || true
-    ssh "$DGX2_IP" "docker rm -f trtllm-multinode 2>/dev/null || true" &
+    docker rm -f trtllm-node-0 trtllm-node-1 2>/dev/null || true
+    ssh "$DGX2_IP" "docker rm -f trtllm-node-0 trtllm-node-1 2>/dev/null || true" &
     wait
     sleep 2
     echo ""
 
-    log_info "Starting TRT-LLM on DGX 1 (master)..."
-    docker run -d --name trtllm-multinode \
-        --rm \
-        --gpus all \
-        --network host \
-        --ulimit memlock=-1 \
-        --ulimit stack=67108864 \
-        --device /dev/infiniband:/dev/infiniband \
-        -v ${HF_CACHE}:/root/.cache/huggingface \
-        -e HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN} \
-        -e HF_HOME=/root/.cache/huggingface \
-        -e UCX_NET_DEVICES="enp1s0f0np0,enp1s0f1np1" \
-        -e NCCL_SOCKET_IFNAME="enp1s0f0np0,enp1s0f1np1" \
-        -e OMPI_MCA_btl_tcp_if_include="enp1s0f0np0,enp1s0f1np1" \
-        -e OMPI_MCA_orte_default_hostfile="/etc/openmpi-hostfile" \
-        -e OMPI_MCA_rmaps_ppr_n_pernode="1" \
-        -e OMPI_ALLOW_RUN_AS_ROOT="1" \
-        -e OMPI_ALLOW_RUN_AS_ROOT_CONFIRM="1" \
-        -e NCCL_DEBUG=INFO \
-        -e NCCL_IB_DISABLE=0 \
-        -e NCCL_IB_HCA="mlx5_bond" \
-        ${TRTLLM_IMAGE} \
-        sh -c "curl https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/refs/heads/main/nvidia/trt-llm/assets/trtllm-mn-entrypoint.sh | sh"
+    # Start node 0 on DGX1
+    start_node 0 "$DGX1_IP"
 
-    log_info "Starting TRT-LLM on DGX 2 (slave)..."
-    ssh "$DGX2_IP" "docker run -d --name trtllm-multinode \
-        --rm \
-        --gpus all \
-        --network host \
-        --ulimit memlock=-1 \
-        --ulimit stack=67108864 \
-        --device /dev/infiniband:/dev/infiniband \
-        -v ${HF_CACHE}:/root/.cache/huggingface \
-        -e HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN} \
-        -e HF_HOME=/root/.cache/huggingface \
-        -e UCX_NET_DEVICES=\"enp1s0f0np0,enp1s0f1np1\" \
-        -e NCCL_SOCKET_IFNAME=\"enp1s0f0np0,enp1s0f1np1\" \
-        -e OMPI_MCA_btl_tcp_if_include=\"enp1s0f0np0,enp1s0f1np1\" \
-        -e OMPI_MCA_orte_default_hostfile=\"/etc/openmpi-hostfile\" \
-        -e OMPI_MCA_rmaps_ppr_n_pernode=\"1\" \
-        -e OMPI_ALLOW_RUN_AS_ROOT=\"1\" \
-        -e OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=\"1\" \
-        -e NCCL_DEBUG=INFO \
-        -e NCCL_IB_DISABLE=0 \
-        -e NCCL_IB_HCA=\"mlx5_bond\" \
-        ${TRTLLM_IMAGE} \
-        sh -c \"curl https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/refs/heads/main/nvidia/trt-llm/assets/trtllm-mn-entrypoint.sh | sh\""
+    # Start node 1 on DGX2 (unless test-single)
+    if [ "$TEST_SINGLE" = false ]; then
+        log_info "Starting node 1 on remote DGX2..."
+        start_node 1 "$DGX2_IP"
+    else
+        log_warn "Test-single mode: only starting node 0 on DGX1"
+    fi
 
     echo ""
     log_info "Cluster starting..."
-    log_info "Check status with: $0 --status"
-    log_info "Stop cluster with: $0 --stop"
-    log_info ""
-    log_info "NOTE: The entrypoint script will handle model download and engine startup automatically."
+    log_info "API endpoint: http://${DGX1_IP}:${PORT}/v1/chat/completions"
+    log_info "Check status: $0 --status"
+    log_info "Stop cluster: $0 --stop"
 }
 
 # Main

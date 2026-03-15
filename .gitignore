@@ -1,0 +1,36 @@
+# Secrets
+.env
+*.key
+*.pem
+*.secret
+credentials.json
+tokens.json
+
+# Cache
+.cache/
+.huggingface/
+.trl_scratch/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.swp
+.DS_Store
+
+# Docker
+docker-build/
+*.tar
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.sublime*
