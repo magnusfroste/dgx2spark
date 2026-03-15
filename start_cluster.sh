@@ -14,13 +14,13 @@ MODEL="${MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct}"
 # Tensor parallelism: 8 GPUs per node, 2 nodes = 16 GPUs total
 TENSOR_PARALLEL_SIZE=8
 MAX_MODEL_LEN=32768
-GPU_MEMORY_UTIL=0.9
+GPU_MEMORY_UTIL=0.75
 PORT=30000
 HUGGINGFACE_TOKEN="${HUGGINGFACE_TOKEN:-}"
 HF_CACHE="/home/ss/.cache/huggingface"
 
-# Use custom vLLM image built from GitHub (has multi-node fix for 1+ GPU per node)
-VLLM_IMAGE="dgx2spark/vllm:latest"
+# Use NVIDIA's official vLLM 0.18.0 ARM64 image (certified for DGX)
+VLLM_IMAGE="nvcr.io/nvidia/vllm/vllm-openai:0.18.0-arm64"
 
 # Colors
 RED='\033[0;31m'
@@ -79,6 +79,72 @@ show_status() {
 }
 
 # Start cluster
+# Auto-detect QSFP network interface
+detect_network_interface() {
+    # Try to auto-detect the QSFP interface (usually enp1s0f0np0 on DGX systems)
+    # Fall back to the first interface with the 10.0.0.x network
+    local iface
+
+    # Check for known DGX QSFP interface names
+    iface=$(ip link show | grep -E 'enp1s0f0np0|enp2s0f0np0|ens1f0np0' | grep -v ' DOWN' | head -1 | awk -F: '{print $2}' | xargs)
+
+    if [ -z "$iface" ]; then
+        # Fall back to interface that has the 10.0.0.x address
+        iface=$(ip route get 10.0.0.2 2>/dev/null | head -1 | awk '{print $5}' | xargs)
+    fi
+
+    if [ -z "$iface" ]; then
+        # Last resort: first non-lo interface with a 10.x.x.x address
+        iface=$(ip -4 addr show | grep 'inet 10\.' | head -1 | awk '{print $NF}' | xargs)
+    fi
+
+    echo "${iface:-auto}"
+}
+
+# Pre-flight checks
+preflight_checks() {
+    log_info "Running pre-flight checks..."
+
+    # Check if we can resolve the DGX2 IP
+    if ! ping -c 1 -W 2 "$DGX2_IP" &>/dev/null; then
+        log_error "Cannot reach DGX2 ($DGX2_IP). Check network connectivity."
+        return 1
+    fi
+
+    # Check SSH connectivity to DGX2
+    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$DGX2_IP" "echo ok" 2>/dev/null | grep -q ok; then
+        log_error "Cannot SSH to DGX2 ($DGX2_IP)."
+        log_error "Make sure SSH keys are set up: ssh-copy-id $DGX2_IP"
+        return 1
+    fi
+
+    # Check if Docker is running on both nodes
+    if ! docker info &>/dev/null; then
+        log_error "Docker is not running on DGX1. Start it with: sudo systemctl start docker"
+        return 1
+    fi
+
+    if ! ssh "$DGX2_IP" "docker info" &>/dev/null; then
+        log_error "Docker is not running on DGX2."
+        return 1
+    fi
+
+    # Check GPU availability
+    local local_gpus=$(nvidia-smi --list-gpus 2>/dev/null | wc -l)
+    local remote_gpus=$(ssh "$DGX2_IP" "nvidia-smi --list-gpus 2>/dev/null" | wc -l)
+
+    if [ "$local_gpus" -lt 8 ]; then
+        log_warn "DGX1 only has $local_gpus GPUs (expected 8)"
+    fi
+
+    if [ "$remote_gpus" -lt 8 ]; then
+        log_warn "DGX2 only has $remote_gpus GPUs (expected 8)"
+    fi
+
+    log_info "Pre-flight checks passed (DGX1: ${local_gpus} GPUs, DGX2: ${remote_gpus} GPUs)"
+    return 0
+}
+
 start_cluster() {
     log_info "Starting vLLM multi-node cluster..."
     log_info "Model: $MODEL"
@@ -86,6 +152,34 @@ start_cluster() {
     log_info "Total GPUs: $((TENSOR_PARALLEL_SIZE * 2))"
     log_info "Master: $DGX1_IP"
     log_info "Slave: $DGX2_IP"
+    echo ""
+
+    # Auto-detect network interface
+    # Prefer IB for 200G, fallback to QSFP Ethernet at 10G
+    NCCL_IFACE=$(detect_network_interface)
+    if ls /dev/infiniband 2>/dev/null | grep -q uverbs && grep -q "ib" <<< "$(ibv_devinfo 2>/dev/null | head -5 || echo "")"; then
+        log_info "InfiniBand detected - using RDMA for 200Gbps!"
+        NCCL_IFACE="ib0"
+        export NCCL_IB_DISABLE=0
+        export NCCL_IB_HCA=mlx5_0
+        export NCCL_IB_GID_INDEX=3
+        export NCCL_IB_TC=106
+        export NCCL_ALGO=Ring
+        export NCCL_MIN_NCHANNELS=1
+        export NCCL_PROTO=LL
+    else
+        log_warn "InfiniBand not available - falling back to 10Gbps Ethernet over QSFP"
+        export NCCL_IB_DISABLE=1
+        export NCCL_ALGO=Tree
+    fi
+    log_info "Using network interface: ${NCCL_IFACE}"
+    echo ""
+
+    # Run pre-flight checks
+    if ! preflight_checks; then
+        log_error "Pre-flight checks failed. Aborting."
+        return 1
+    fi
     echo ""
 
     # Force remove existing containers
@@ -107,8 +201,8 @@ start_cluster() {
         -e NCCL_DEBUG=INFO \
         -e NCCL_IB_DISABLE=1 \
         -e NCCL_NET_GDR_LEVEL=2 \
-        -e NCCL_SOCKET_IFNAME=enp1s0f0np0 \
-        -e GLOO_SOCKET_IFNAME=enp1s0f0np0 \
+        -e NCCL_SOCKET_IFNAME=${NCCL_IFACE:-auto} \
+        -e GLOO_SOCKET_IFNAME=${NCCL_IFACE:-auto} \
         -e NCCL_P2P_DISABLE=1 \
         --env "VLLM_LOGGING_LEVEL=DEBUG" \
         ${VLLM_IMAGE} \
@@ -131,8 +225,8 @@ start_cluster() {
         -e NCCL_DEBUG=INFO \
         -e NCCL_IB_DISABLE=1 \
         -e NCCL_NET_GDR_LEVEL=2 \
-        -e NCCL_SOCKET_IFNAME=enp1s0f0np0 \
-        -e GLOO_SOCKET_IFNAME=enp1s0f0np0 \
+        -e NCCL_SOCKET_IFNAME=${NCCL_IFACE:-auto} \
+        -e GLOO_SOCKET_IFNAME=${NCCL_IFACE:-auto} \
         -e NCCL_P2P_DISABLE=1 \
         --env \"VLLM_LOGGING_LEVEL=DEBUG\" \
         ${VLLM_IMAGE} \

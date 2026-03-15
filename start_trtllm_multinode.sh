@@ -95,10 +95,17 @@ start_node() {
         "-e HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}"
         "-e HF_HOME=/root/.cache/huggingface"
         "-e NCCL_DEBUG=INFO"
-        "-e NCCL_IB_DISABLE=1"
-        "-e NCCL_SOCKET_IFNAME=enp1s0f0np0"
+        "-e NCCL_IB_HCA=mlx5_0"              # Use InfiniBand HCA
+        "-e NCCL_SOCKET_IFNAME=ib0"          # IB interface (if available)
+        "-e NCCL_IB_DISABLE=0"               # ENABLE InfiniBand!
+        "-e NCCL_IB_GID_INDEX=3"             # GID index for RoCE
+        "-e NCCL_IB_TC=106"                  # Trafﬁc class for IB
         "-e NCCL_NET_GDR_LEVEL=2"
         "-e NCCL_P2P_DISABLE=1"
+        "-e NCCL_ALGO=Ring"                  # Ring algorithm for IB
+        "-e NCCL_MIN_NCHANNELS=1"            # Reduce channels for large messages
+        "-e NCCL_PROTO=LL"                   # Low-latency protocol
+        "-e SHM_SIZE=8g"                     # Shared memory size
     )
     # Add distributed env if multi-node
     if [ "$TEST_SINGLE" = false ]; then
@@ -112,6 +119,10 @@ start_node() {
 
     # Build docker run command
     local CMD="docker run -d --name ${CONTAINER_NAME} --rm --gpus all --network host --ipc host --ulimit memlock=-1 --ulimit stack=67108864"
+    # Add IB device if available (for 200G RDMA)
+    if ls /dev/infiniband 2>/dev/null | grep -q uverbs; then
+        CMD="$CMD --device /dev/infiniband:/dev/infiniband"
+    fi
     for var in "${ENV_VARS[@]}"; do
         CMD="$CMD $var"
     done

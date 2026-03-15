@@ -45,6 +45,23 @@ trtllm-serve serve ${MODEL} \
   --max_seq_len 32768
 ```
 
+**NCCL Configuration for 200 Gbps**:
+```bash
+# ENABLE InfiniBand (RDMA) for 200G, NOT TCP!
+export NCCL_IB_DISABLE=0              # Enable IB (was 1 for TCP)
+export NCCL_IB_HCA=mlx5_0             # Mellanox HCA device
+export NCCL_SOCKET_IFNAME=ib0         # IB interface, NOT enp1s0f0np0
+export NCCL_IB_GID_INDEX=3            # GID index for RoCE
+export NCCL_IB_TC=106                 # Traffic class for IB
+export NCCL_ALGO=Ring                 # Ring algorithm optimal for IB
+export NCCL_MIN_NCHANNELS=1           # Fewer channels for large messages
+export NCCL_PROTO=LL                  # Low-latency protocol
+export NCCL_NET_GDR_LEVEL=2           # GPU Direct RDMA (keep enabled)
+export NCCL_P2P_DISABLE=1             # Disable cross-node P2P
+```
+
+**Hardware**: ConnectX-7 (MT2910) supports 200Gbps (200000baseKR4).
+
 **Pros**:
 - ✅ Official NVIDIA solution for DGX clusters
 - ✅ ARM64 support certified for GB10
