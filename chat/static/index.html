@@ -911,8 +911,8 @@
             if (!text || isGenerating || !currentChatId) return;
 
             // Add user message
-            const chats = loadChats();
-            const chat = chats[currentChatId];
+            let chats = loadChats();
+            let chat = chats[currentChatId];
             if (!chat || !chat.messages) {
                 console.error("Chat not found or no messages array", { currentChatId, chat });
                 return;
@@ -939,21 +939,27 @@
                     return;
                 }
 
+                // Capture messages at request time (in case other chats are edited)
+                const messages = chat.messages.slice();
+
                 // Stream response
                 const response = await fetch("/api/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        messages: chat.messages,
+                        messages: messages,
                         model: model,
                         max_tokens: 2048
                     })
                 });
 
+                // Add empty assistant message and save
+                chats = loadChats();  // Reload in case other chats changed
+                chat = chats[currentChatId];
                 let assistantMessage = { role: "assistant", content: "", stats: null };
                 chat.messages.push(assistantMessage);
-                saveChats(chats);  // Save the empty assistant message placeholder
-                renderMessages();  // Show user message + empty assistant bubble
+                saveChats(chats);
+                renderMessages();
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -976,17 +982,28 @@
                                     if (!startTime) startTime = Date.now();
                                     assistantMessage.content += json.token;
                                     tokenCount++;
-                                    // Throttle rendering: save every token but render every 5 tokens
-                                    saveChats(chats);
-                                    if (tokenCount % 5 === 0) {
-                                        renderMessages();
+
+                                    // Load fresh and update
+                                    if (tokenCount % 3 === 0) {  // Save/render every 3 tokens
+                                        chats = loadChats();
+                                        chat = chats[currentChatId];
+                                        if (chat && chat.messages.length > 0) {
+                                            chat.messages[chat.messages.length - 1].content = assistantMessage.content;
+                                            saveChats(chats);
+                                            renderMessages();
+                                        }
                                     }
                                 }
 
                                 if (json.stats) {
                                     assistantMessage.stats = `${json.stats.tokens_per_sec} t/s · ${json.stats.time}s · ${json.stats.tokens} tokens`;
                                     lastTps = json.stats.tokens_per_sec;
-                                    saveChats(chats);
+                                    chats = loadChats();
+                                    chat = chats[currentChatId];
+                                    if (chat && chat.messages.length > 0) {
+                                        chat.messages[chat.messages.length - 1] = assistantMessage;
+                                        saveChats(chats);
+                                    }
                                     updateTpsDisplay();
                                     renderMessages();
                                 }
@@ -995,19 +1012,28 @@
                                     console.error("Error:", json.error);
                                 }
                             } catch (e) {
-                                // Ignore parse errors
+                                console.error("Parse error:", e);
                             }
                         }
                     }
                 }
 
-                saveChats(chats);
-                renderMessages();  // Final render to ensure all tokens are visible
-            } catch (e) {
-                const chats = loadChats();
-                chats[currentChatId].messages.push({ role: "assistant", content: `Error: ${e.message}` });
-                saveChats(chats);
+                // Final save
+                chats = loadChats();
+                chat = chats[currentChatId];
+                if (chat && chat.messages.length > 0) {
+                    chat.messages[chat.messages.length - 1] = assistantMessage;
+                    saveChats(chats);
+                }
                 renderMessages();
+            } catch (e) {
+                console.error("Chat error:", e);
+                chats = loadChats();
+                if (chats[currentChatId]) {
+                    chats[currentChatId].messages.push({ role: "assistant", content: `Error: ${e.message}` });
+                    saveChats(chats);
+                    renderMessages();
+                }
             } finally {
                 isGenerating = false;
                 document.getElementById("sendBtn").disabled = false;
