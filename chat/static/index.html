@@ -720,21 +720,29 @@
         }
 
         // ========== CONTEXT DISPLAY ==========
+        function estimateTokens(text) {
+            // Rough approximation: ~1 token per 4 characters for English
+            // Add 4 tokens per message for role/formatting
+            return Math.ceil(text.length / 4);
+        }
+
         function showContext(messagesToSend) {
             const contextEl = document.getElementById("contextInfo");
             const contextText = document.getElementById("contextText");
 
-            // Count user and assistant messages
+            // Count messages and estimate tokens
             const userMsgs = messagesToSend.filter(m => m.role === "user").length;
             const assistantMsgs = messagesToSend.filter(m => m.role === "assistant").length;
 
-            let contextStr = `📚 Context: ${messagesToSend.length} messages (`;
-            if (userMsgs > 0) contextStr += `${userMsgs} user`;
-            if (assistantMsgs > 0) {
-                if (userMsgs > 0) contextStr += ", ";
-                contextStr += `${assistantMsgs} assistant`;
+            // Sum up estimated tokens
+            let totalTokens = 0;
+            for (const msg of messagesToSend) {
+                totalTokens += estimateTokens(msg.content) + 4; // +4 for role/formatting
             }
-            contextStr += `)`;
+
+            let contextStr = `📚 Context: ${messagesToSend.length} messages (~${totalTokens} tokens) | `;
+            if (userMsgs > 0) contextStr += `${userMsgs}👤`;
+            if (assistantMsgs > 0) contextStr += ` ${assistantMsgs}🤖`;
 
             contextText.textContent = contextStr;
             contextEl.style.display = "block";
