@@ -359,6 +359,34 @@ async def get_loading_status():
     """Get current model loading status."""
     return model_loading_state
 
+@app.get("/api/logs")
+async def stream_logs():
+    """Stream Docker container logs from TRT-LLM."""
+    async def event_generator():
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "docker", "logs", "-f", "--tail", "50", "trtllm-multinode",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
+            )
+            try:
+                while True:
+                    line = await asyncio.wait_for(process.stdout.readline(), timeout=30)
+                    if not line:
+                        break
+                    yield f'data: {json.dumps({"log": line.decode().rstrip()})}\n\n'
+            except asyncio.TimeoutError:
+                yield f'data: {json.dumps({"log": "--- waiting for output ---"})}\n\n'
+            finally:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        except Exception as e:
+            yield f'data: {json.dumps({"log": f"Error: {str(e)}"})}\n\n'
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=7860)

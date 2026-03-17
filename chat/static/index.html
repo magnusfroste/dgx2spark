@@ -523,6 +523,68 @@
             font-size: 16px;
             font-weight: 500;
         }
+
+        /* ========== LOG PANEL ========== */
+        .log-panel {
+            width: 300px;
+            background: #0a0a0c;
+            border-left: 1px solid #2a2a2f;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+
+        .log-panel-header {
+            padding: 10px 12px;
+            background: #131316;
+            border-bottom: 1px solid #2a2a2f;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: #666680;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .log-panel-header button {
+            background: none;
+            border: none;
+            color: #666680;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0;
+            transition: color 0.2s;
+        }
+
+        .log-panel-header button:hover {
+            color: #e8e8f0;
+        }
+
+        .log-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            line-height: 1.5;
+            color: #555570;
+        }
+
+        .log-line {
+            margin-bottom: 1px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-line.error {
+            color: #ff6b6b;
+        }
+
+        .log-line.info {
+            color: #00c896;
+        }
     </style>
 </head>
 <body>
@@ -573,6 +635,15 @@
                     <button class="send-btn" onclick="sendMessage()" id="sendBtn">Send</button>
                 </div>
             </div>
+        </div>
+
+        <!-- LOG PANEL -->
+        <div class="log-panel" id="logPanel">
+            <div class="log-panel-header">
+                <span>Inference Log</span>
+                <button onclick="toggleLogPanel()">✕</button>
+            </div>
+            <div class="log-content" id="logContent"></div>
         </div>
     </div>
 
@@ -701,6 +772,49 @@
             navigator.clipboard.writeText(text);
         }
 
+        // ========== LOG PANEL ==========
+        let logEventSource = null;
+
+        function connectLogs() {
+            if (logEventSource) logEventSource.close();
+            logEventSource = new EventSource("/api/logs");
+            logEventSource.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    appendLog(data.log);
+                } catch (err) {
+                    console.error("Failed to parse log:", err);
+                }
+            };
+            logEventSource.onerror = () => {
+                logEventSource.close();
+                setTimeout(connectLogs, 3000);
+            };
+        }
+
+        function appendLog(line) {
+            const el = document.createElement("div");
+            el.className = "log-line";
+            if (line.match(/error|Error|ERROR|fatal|FATAL/i)) {
+                el.classList.add("error");
+            } else if (line.match(/Ready|ready|INFO|started|Complete/i)) {
+                el.classList.add("info");
+            }
+            el.textContent = line;
+            const content = document.getElementById("logContent");
+            content.appendChild(el);
+            content.scrollTop = content.scrollHeight;
+            // Keep only last 500 lines to avoid memory bloat
+            while (content.children.length > 500) {
+                content.removeChild(content.firstChild);
+            }
+        }
+
+        function toggleLogPanel() {
+            const panel = document.getElementById("logPanel");
+            panel.style.display = panel.style.display === "none" ? "flex" : "none";
+        }
+
         // ========== MODEL MANAGEMENT ==========
         async function loadModels() {
             try {
@@ -808,6 +922,7 @@
             input.style.height = "auto";
             isGenerating = true;
             document.getElementById("sendBtn").disabled = true;
+            saveChats(chats);
             renderMessages();
             renderChatList();
 
@@ -996,6 +1111,7 @@
             }
             loadModels();
             setInterval(loadModels, 5000);  // Refresh models every 5 sec
+            connectLogs();  // Start streaming inference logs
         });
     </script>
 </body>
