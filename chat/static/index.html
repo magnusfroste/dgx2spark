@@ -832,7 +832,10 @@
 
                 // Capture messages at request time (in case other chats are edited)
                 // But DON'T include empty assistant messages in the API request
-                const messagesToSend = chat.messages.filter(m => m.role && m.content !== "");
+                // Also strip out "stats" field as API doesn't expect it
+                const messagesToSend = chat.messages
+                    .filter(m => m.role && m.content !== "")
+                    .map(m => ({ role: m.role, content: m.content }));
 
                 console.log("Sending chat request with", messagesToSend.length, "messages to model", model);
                 console.log("All messages:", JSON.stringify(chat.messages));
