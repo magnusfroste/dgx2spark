@@ -953,6 +953,10 @@
                     })
                 });
 
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
                 // Add empty assistant message and save
                 chats = loadChats();  // Reload in case other chats changed
                 chat = chats[currentChatId];
