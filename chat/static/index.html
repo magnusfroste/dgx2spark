@@ -523,6 +523,16 @@
             font-size: 16px;
             font-weight: 500;
         }
+
+        /* ========== CONTEXT INFO ========== */
+        .context-info {
+            padding: 10px 16px;
+            background: #1a1a1f;
+            border-bottom: 1px solid #2a2a2f;
+            font-size: 12px;
+            color: #888;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -554,6 +564,11 @@
                         ⚡ <span id="tpsValue">0</span> t/s
                     </div>
                 </div>
+            </div>
+
+            <!-- CONTEXT INFO -->
+            <div class="context-info" id="contextInfo" style="display: none;">
+                <span id="contextText"></span>
             </div>
 
             <!-- CHAT AREA -->
@@ -704,6 +719,31 @@
             navigator.clipboard.writeText(text);
         }
 
+        // ========== CONTEXT DISPLAY ==========
+        function showContext(messagesToSend) {
+            const contextEl = document.getElementById("contextInfo");
+            const contextText = document.getElementById("contextText");
+
+            // Count user and assistant messages
+            const userMsgs = messagesToSend.filter(m => m.role === "user").length;
+            const assistantMsgs = messagesToSend.filter(m => m.role === "assistant").length;
+
+            let contextStr = `📚 Context: ${messagesToSend.length} messages (`;
+            if (userMsgs > 0) contextStr += `${userMsgs} user`;
+            if (assistantMsgs > 0) {
+                if (userMsgs > 0) contextStr += ", ";
+                contextStr += `${assistantMsgs} assistant`;
+            }
+            contextStr += `)`;
+
+            contextText.textContent = contextStr;
+            contextEl.style.display = "block";
+        }
+
+        function hideContext() {
+            document.getElementById("contextInfo").style.display = "none";
+        }
+
         // ========== MODEL MANAGEMENT ==========
         async function loadModels() {
             try {
@@ -841,6 +881,9 @@
                 console.log("All messages:", JSON.stringify(chat.messages));
                 console.log("Filtered messages:", JSON.stringify(messagesToSend));
 
+                // Show context info
+                showContext(messagesToSend);
+
                 const payload = {
                     messages: messagesToSend,
                     model: model,
@@ -959,6 +1002,7 @@
             } finally {
                 isGenerating = false;
                 document.getElementById("sendBtn").disabled = false;
+                hideContext();
             }
         }
 
