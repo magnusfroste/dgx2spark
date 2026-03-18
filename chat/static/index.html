@@ -399,60 +399,75 @@
             border-radius: 4px;
         }
 
-        /* ========== THINKING MODE ========== */
-        .thinking-block {
+        /* ========== THINKING MODE (SEPARATE & MINIMIZED) ========== */
+        .thinking-container {
             background: #0d0d0f;
-            border-left: 3px solid #ffa500;
-            padding: 8px 12px;
-            margin: 8px 0;
-            border-radius: 4px;
-            font-size: 12px;
-            color: #888;
-            cursor: pointer;
-            user-select: none;
-            transition: all 0.2s;
-        }
-
-        .thinking-block:hover {
-            background: #151520;
-            border-left-color: #ffb500;
-        }
-
-        .thinking-block.expanded {
-            background: #0d0d0f;
+            border: 1px solid #2a2a2f;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            overflow: hidden;
         }
 
         .thinking-header {
+            background: #131316;
+            padding: 10px 12px;
             display: flex;
             align-items: center;
-            gap: 6px;
-            font-weight: 500;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s;
+            border-bottom: 1px solid #2a2a2f;
+        }
+
+        .thinking-header:hover {
+            background: #1a1a1f;
         }
 
         .thinking-toggle {
             display: inline-block;
-            width: 6px;
-            height: 6px;
+            width: 5px;
+            height: 5px;
             background: #ffa500;
-            border-radius: 2px;
+            border-radius: 1px;
             transition: transform 0.2s;
         }
 
-        .thinking-block.expanded .thinking-toggle {
+        .thinking-container.expanded .thinking-toggle {
             transform: rotate(90deg);
+        }
+
+        .thinking-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: #ffa500;
+            flex: 1;
+        }
+
+        .thinking-preview {
+            font-size: 11px;
+            color: #666680;
+            max-width: 200px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .thinking-content {
             display: none;
-            margin-top: 6px;
-            padding-top: 6px;
-            border-top: 1px solid #2a2a2f;
-            color: #aaa;
+            padding: 12px;
+            background: #0d0d0f;
+            color: #888;
+            font-size: 12px;
+            line-height: 1.5;
             white-space: pre-wrap;
             word-break: break-word;
+            overflow-y: auto;
+            max-height: 200px;
+            border-top: 1px solid #2a2a2f;
         }
 
-        .thinking-block.expanded .thinking-content {
+        .thinking-container.expanded .thinking-content {
             display: block;
         }
             font-size: 11px;
@@ -807,18 +822,42 @@
             return { thinking, content };
         }
 
-        function renderThinkingBlock(content) {
-            /**Create expandable thinking block HTML*/
-            const escaped = content.substring(0, 100) + (content.length > 100 ? "..." : "");
-            return `
-                <div class="thinking-block" onclick="this.classList.toggle('expanded')">
-                    <div class="thinking-header">
-                        <span class="thinking-toggle"></span>
-                        💭 Thinking
-                    </div>
-                    <div class="thinking-content">${escaped.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
-                </div>
-            `;
+        function createThinkingElement(content) {
+            /**Create separate, minimized thinking container*/
+            const container = document.createElement("div");
+            container.className = "thinking-container";
+
+            const header = document.createElement("div");
+            header.className = "thinking-header";
+
+            const toggle = document.createElement("span");
+            toggle.className = "thinking-toggle";
+
+            const label = document.createElement("span");
+            label.className = "thinking-label";
+            label.textContent = "💭 Thinking";
+
+            const preview = document.createElement("span");
+            preview.className = "thinking-preview";
+            preview.textContent = content.substring(0, 80) + (content.length > 80 ? "..." : "");
+
+            header.appendChild(toggle);
+            header.appendChild(label);
+            header.appendChild(preview);
+
+            const contentDiv = document.createElement("div");
+            contentDiv.className = "thinking-content";
+            contentDiv.textContent = content;
+
+            container.appendChild(header);
+            container.appendChild(contentDiv);
+
+            // Toggle on click
+            header.addEventListener("click", () => {
+                container.classList.toggle("expanded");
+            });
+
+            return container;
         }
 
         // ========== CONTEXT DISPLAY ==========
@@ -1132,46 +1171,45 @@
                 // Render markdown now that response is complete
                 window.isStreaming = false;
 
-                // Extract and render thinking blocks
+                // Extract thinking blocks (separate from content)
                 const { thinking, content } = extractThinkingBlocks(assistantMessage.content);
                 const html = content ? marked.parse(content) : "";
                 bubbleDiv.innerHTML = "";
 
-                // Add thinking blocks if present
+                // Add thinking blocks FIRST (minimized by default)
                 if (thinking.length > 0) {
                     for (const thinkContent of thinking) {
-                        const thinkDiv = document.createElement("div");
-                        thinkDiv.innerHTML = renderThinkingBlock(thinkContent);
-                        bubbleDiv.appendChild(thinkDiv.firstChild);
-                    }
-                    if (content) {
-                        const sep = document.createElement("div");
-                        sep.style.height = "1px";
-                        sep.style.background = "#2a2a2f";
-                        sep.style.margin = "8px 0";
-                        bubbleDiv.appendChild(sep);
+                        const thinkElement = createThinkingElement(thinkContent);
+                        bubbleDiv.appendChild(thinkElement);
                     }
                 }
 
-                // Add main response content
+                // Add main response content below thinking
                 if (html) {
                     const contentDiv = document.createElement("div");
                     contentDiv.innerHTML = html;
                     bubbleDiv.appendChild(contentDiv);
+                } else if (thinking.length === 0 && !html) {
+                    bubbleDiv.innerHTML = "<em>No response</em>";
                 }
 
-                // Add copy button and stats
+                // Add copy button (copy only main content, not thinking)
+                const actionsDiv = document.createElement("div");
+                actionsDiv.className = "message-actions";
+                const copyBtn = document.createElement("button");
+                copyBtn.className = "message-action-btn";
+                copyBtn.textContent = "Copy";
+                copyBtn.onclick = () => copyMessage(content);
+                actionsDiv.appendChild(copyBtn);
+                bubbleDiv.appendChild(actionsDiv);
+
+                // Add stats
                 if (assistantMessage.stats) {
                     const statsDiv = document.createElement("div");
                     statsDiv.className = "message-stats";
                     statsDiv.textContent = assistantMessage.stats;
                     bubbleDiv.appendChild(statsDiv);
                 }
-
-                const actionsDiv = document.createElement("div");
-                actionsDiv.className = "message-actions";
-                actionsDiv.innerHTML = `<button class="message-action-btn" onclick="copyMessage('${assistantMessage.content.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;")}')">Copy</button>`;
-                bubbleDiv.appendChild(actionsDiv);
 
                 // Final save
                 chats = loadChats();
