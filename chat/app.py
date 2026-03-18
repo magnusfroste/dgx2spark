@@ -44,11 +44,11 @@ async def get_http_session():
 # Serve static files (HTML/CSS/JS)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Configuration
-TRT_LLM_API = "http://localhost:8355/v1"
-HF_CACHE_DIR = Path("/home/nvidia/.cache/huggingface/hub")
-DGX1_IP = "10.0.0.1"
-DGX2_IP = "10.0.0.2"
+# Configuration (read from environment variables)
+TRT_LLM_API = os.environ.get("TRT_LLM_API", "http://localhost:8355/v1")
+HF_CACHE_DIR = Path(os.environ.get("HF_CACHE_DIR", "/home/nvidia/.cache/huggingface/hub"))
+DGX1_IP = os.environ.get("DGX1_IP", "10.0.0.1")
+DGX2_IP = os.environ.get("DGX2_IP", "10.0.0.2")
 
 # Global state
 download_jobs: Dict[str, dict] = {}  # {job_id: {status, progress, error}}
