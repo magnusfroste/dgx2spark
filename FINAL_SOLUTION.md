@@ -117,7 +117,7 @@ This will:
 
 ### Step 2: Launch Inference
 ```bash
-export HF_TOKEN="YOUR-HF-TOKEN"
+export HF_TOKEN="your-huggingface-token"
 export TRTLLM_MN_CONTAINER="trtllm-multinode"
 
 docker exec \

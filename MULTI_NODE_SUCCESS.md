@@ -96,7 +96,7 @@ This will:
 
 From DGX1, run:
 ```bash
-export HF_TOKEN="YOUR-HF-TOKEN"
+export HF_TOKEN="your-huggingface-token"
 
 docker exec \
   -e HF_TOKEN="$HF_TOKEN" \
